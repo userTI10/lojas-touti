@@ -1,3 +1,5 @@
+const coordenadasCache = new Map();
+
 // Inicializa o mapa
 const map = L.map('map').setView([-23.550520, -46.633308], 4);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -54,6 +56,39 @@ function formatCEP(cep) {
     return cep ? String(cep).replace(/[^0-9]/g, '').padStart(8, '0') : '00000000';
 }
 
+async function processarLote(items, tamanhoLote = 5) {
+    const lotes = [];
+    for (let i = 0; i < items.length; i += tamanhoLote) {
+        lotes.push(items.slice(i, i + tamanhoLote));
+    }
+
+    for (const lote of lotes) {
+        await Promise.all(lote.map(async (item) => {
+            const coords = await buscarCoordenadas(item.CEP);
+            if (coords) {
+                const marker = L.marker([coords.lat, coords.lon], {
+                    icon: customIcon
+                }).addTo(map);
+                
+                marker.getData = () => ({
+                    nomeFantasia: item['NOME FANTASIA'],
+                    cep: item.CEP
+                });
+
+                marker.bindPopup(`
+                    <b>${item['NOME FANTASIA']}</b><br>
+                    ${item.LOGRADOURO}, ${item.COMPLEMENTO}<br>
+                    ${item.BAIRRO} - ${item.CIDADE}/${item.UF}<br>
+                    CEP: ${item.CEP}
+                `);
+
+                markers.push(marker);
+            }
+        }));
+    }
+}
+
+let tempoInicial = Date.now();
 fetch('data.xlsx')
     .then(response => response.arrayBuffer())
     .then(async (data) => {
@@ -70,6 +105,9 @@ fetch('data.xlsx')
             'UF': row['UF']
         }));
 
+        console.log(`Total de registros: ${jsonData.length}`);
+
+        // Preenche o select de estados
         const estados = [...new Set(jsonData.map(item => item.UF))].sort();
         const selectEstado = document.getElementById('estadoFilter');
         estados.forEach(estado => {
@@ -79,59 +117,44 @@ fetch('data.xlsx')
             selectEstado.appendChild(option);
         });
 
-        for (const item of jsonData) {
-            const coords = await buscarCoordenadas(item.CEP);
-            if (coords) {
-                const marker = L.marker([coords.lat, coords.lon], {
-                    icon: customIcon
-                }).addTo(map);
-                
-                // Adiciona dados ao marcador
-                marker.getData = () => ({
-                    nomeFantasia: item['NOME FANTASIA'],
-                    cep: item.CEP
-                });
-
-                marker.bindPopup(`
-                    <b>${item['NOME FANTASIA']}</b><br>
-                    ${item.LOGRADOURO}, ${item.COMPLEMENTO}<br>
-                    ${item.BAIRRO} - ${item.CIDADE}/${item.UF}<br>
-                    CEP: ${item.CEP}
-                `);
-
-                markers.push(marker);
-            }
-        }
+        // Processa os dados em lotes
+        await processarLote(jsonData, 5);
+        console.log(`Tempo total de processamento: ${(Date.now() - tempoInicial)/1000} segundos`);
     })
     .catch(error => console.error('Erro ao carregar o arquivo:', error));
 
-async function buscarCoordenadas(cep) {
-    try {
-        const response = await fetch(`https://brasilapi.com.br/api/cep/v1/${cep}`);
-        const data = await response.json();
-        
-        if (!data || data.errors) return null;
-
-        // Monta o endereço usando os dados da Brasil API
-        const endereco = `${data.street || ''}, ${data.city}, ${data.state}, Brasil`;
-        const geocodeUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(endereco)}`;
-        
-        const geocodeResponse = await fetch(geocodeUrl);
-        const geocodeData = await geocodeResponse.json();
-
-        if (geocodeData.length > 0) {
-            return {
-                lat: geocodeData[0].lat,
-                lon: geocodeData[0].lon,
-                endereco: endereco
-            };
+    async function buscarCoordenadas(cep) {
+        try {
+            if (coordenadasCache.has(cep)) {
+                return coordenadasCache.get(cep);
+            }
+    
+            const response = await fetch(`https://brasilapi.com.br/api/cep/v1/${cep}`);
+            const data = await response.json();
+            
+            if (!data || data.errors) return null;
+    
+            const endereco = `${data.street || ''}, ${data.city}, ${data.state}, Brasil`;
+            const geocodeUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(endereco)}`;
+            
+            const geocodeResponse = await fetch(geocodeUrl);
+            const geocodeData = await geocodeResponse.json();
+    
+            if (geocodeData.length > 0) {
+                const coords = {
+                    lat: geocodeData[0].lat,
+                    lon: geocodeData[0].lon,
+                    endereco: endereco
+                };
+                coordenadasCache.set(cep, coords);
+                return coords;
+            }
+            return null;
+        } catch (error) {
+            console.error('Erro ao buscar coordenadas:', error);
+            return null;
         }
-        return null;
-    } catch (error) {
-        console.error('Erro ao buscar coordenadas:', error);
-        return null;
     }
-}
 
 let markers = []; // Array para armazenar todos os marcadores
 
